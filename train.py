@@ -6,6 +6,7 @@ import numpy as np
 import datetime
 import airsim
 import math
+import random
 
 from model.td3 import TD3
 from utils import save_results, make_dir, plot_rewards
@@ -17,7 +18,7 @@ parent_path = os.path.dirname(curr_path)  # 父路径
 sys.path.append(parent_path)  # 添加路径到系统路径
 
 # curr_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")  # 获取当前时间
-curr_time = "20220817-003355"
+curr_time = "20221206-094232"
 
 
 class TD3Config:
@@ -25,31 +26,32 @@ class TD3Config:
         self.algo_name = 'TD3'  # 算法名称
         self.env_name = 'UE4 and Airsim'  # 环境名称
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")  # 检测GPU
-        self.train_eps = 3000  # 训练的回合数
-        self.test_eps = 100
+        self.train_eps = 2500  # 训练的回合数
+        self.test_eps = 150
         self.epsilon_start = 50  # Episodes initial random policy is used 增大样本的多样性
-        self.max_step = 1000  # Max time steps to run environment
+        self.max_step = 300  # Max time steps to run environment
         self.expl_noise = 0.15  # Std of Gaussian exploration noise
         self.batch_size = 256  # Batch size for both actor and critic
-        self.gamma = 0.98  # gamma factor
+        self.gamma = 0.99  # gamma factor
         self.tau = 0.0005  # soft update
         self.policy_noise = 0.15  # Std of Gaussian policy noise
         self.noise_clip = 0.3  # Range to clip target policy noise
         self.policy_freq = 3  # Frequency of delayed policy updates
         self.memory_capacity = 2**17
         self.update_times = 1
-        self.n_states = 3+1+3+1+13
+        self.n_states = 3+1+3+1+10
         self.n_actions = 3
         self.max_action = 1.0
         self.seed = 1
         self.result_path = curr_path + "/outputs/" + self.env_name + '/' + curr_time + '/results/'  # 保存结果的路径
         self.model_path = curr_path + "/outputs/" + self.env_name + '/' + curr_time + '/models/'  # 保存模型的路径
         self.eval_model_path = curr_path + "/outputs/" + self.env_name + '/' + curr_time + '/eval_models/'  # 保存验证得到的模型的路径
+        self.ab_model_path = curr_path + "/outputs/" + self.env_name + '/' + curr_time + '/ab_models/'  # 保存平均最佳模型的路径
         self.save_fig = True  # 是否保存图片
 
 
 def eval(cfg, client, agent):
-    env = Multirotor(client, False)
+    env = Multirotor(client, True)
     state = env.get_state()
     finish_step = 0
     ep_reward = 0
@@ -75,9 +77,17 @@ def train(cfg, client, agent):
     print(f'Env：{cfg.env_name}, Algorithm：{cfg.algo_name}, Device：{cfg.device}')
     rewards = []  # 记录所有回合的奖励
     ma_rewards = []  # 记录所有回合的滑动平均奖励
+    success = []
+    collision = []
+    success_rate = []
+    collision_rate = []
+    actor_losses = []
     writer = SummaryWriter('./train_image')
-    best_eval_reward = -math.inf
+    ab_sr = 0
+    # best_eval_reward = -math.inf
     for i_ep in range(int(cfg.train_eps)):
+        critic_loss = 0
+        actor_loss = 0
         env = Multirotor(client, True)
         state = env.get_state()
         ep_reward = 0
@@ -93,24 +103,51 @@ def train(cfg, client, agent):
                     agent.choose_action(state) +
                     np.random.normal(0, cfg.max_action * cfg.expl_noise, size=cfg.n_actions)
                 ).clip(-cfg.max_action, cfg.max_action)
-            next_state, reward, done = env.step(action)
+            next_state, reward, done, result = env.step(action)
             done = np.float32(done)
             agent.memory.push(state, action, next_state, reward, done)
             state = next_state
             ep_reward += reward
 
-            replay_len = len(agent.memory)
-            k = 1 + replay_len / cfg.memory_capacity
-            update_times = int(k * cfg.update_times)
-            for _ in range(update_times):
-                if i_ep + 1 >= cfg.epsilon_start:
-                    agent.update()
+            # 样本量足够大时，可以在一个step内更新两次
+            # replay_len = len(agent.memory)
+            # k = 1 + replay_len / cfg.memory_capacity
+            # update_times = int(k * cfg.update_times)
+            # for _ in range(update_times):
+            #     if i_ep + 1 >= cfg.epsilon_start:
+            #         agent.update()
+
+            cl, al = agent.update()
+            critic_loss = critic_loss + cl
+            actor_loss = actor_loss + al
 
             print('\rEpisode: {}\tStep: {}\tReward: {:.2f}\tDistance: {:.2f}'.format(i_ep + 1, i_step + 1, ep_reward, state[3] * env.max_distance), end="")
             final_distance = state[3] * env.max_distance
             if done:
+                if result == 1:  # success
+                    success.append(1)
+                    collision.append(0)
+                elif result == 2:  # collision
+                    success.append(0)
+                    collision.append(1)
                 break
-        print('\rEpisode: {}\tFinish step: {}\tAverage Reward: {:.2f}\tFinal distance: {:.2f}'.format(i_ep + 1, finish_step, ep_reward, final_distance))
+        if i_ep + 1 >= 100:
+            success_rate.append(sum(success[-100:]) / 100)
+            collision_rate.append(sum(collision[-100:]) / 100)
+            print(
+                '\rEpisode: {}\tFinish step: {}\tAverage Reward: {:.2f}\tFinal distance: {:.2f}\tSuccess rate: {:.2f}\tCollision rate: {:.2f}'.format(
+                    i_ep + 1, finish_step, ep_reward, final_distance, success_rate[-1], collision_rate[-1]))
+            writer.add_scalars(main_tag='result',
+                               tag_scalar_dict={
+                                   'sr': success_rate[-1],
+                                   'cr': collision_rate[-1]
+                               },
+                               global_step=i_ep)
+        else:
+            print('\rEpisode: {}\tFinish step: {}\tAverage Reward: {:.2f}\tFinal distance: {:.2f}'.format(i_ep + 1,
+                                                                                                          finish_step,
+                                                                                                          ep_reward,
+                                                                                                          final_distance))
         rewards.append(ep_reward)
         if ma_rewards:
             ma_rewards.append(0.9 * ma_rewards[-1] + 0.1 * rewards[-1])
@@ -122,17 +159,19 @@ def train(cfg, client, agent):
                                'ma_reward': ma_rewards[-1]
                            },
                            global_step=i_ep)
+        writer.add_scalar(tag='critic_loss', scalar_value=critic_loss / finish_step, global_step=i_ep)
+        writer.add_scalar(tag='actor_loss', scalar_value=actor_loss / (finish_step / 3), global_step=i_ep)
+        actor_losses.append(actor_loss / (finish_step / 3))
+        if len(success_rate) > 0 and success_rate[-1] >= ab_sr:
+            agent.save(path=cfg.ab_model_path)
+            ab_sr = success_rate[-1]
         if (i_ep + 1) % 10 == 0:
             agent.save(path=cfg.model_path)
-            eval_reward = eval(cfg, client, agent)  # 验证模型
-            if eval_reward > best_eval_reward:
-                agent.save(path=cfg.eval_model_path)
-                best_eval_reward = eval_reward
         if (i_ep + 1) == cfg.train_eps:
             env.land()
-    print('Finish Training！')
+    print('Finish Training!')
     writer.close()
-    return rewards, ma_rewards
+    return rewards, ma_rewards, success_rate, collision_rate, actor_losses
 
 
 def set_seed(seed):
@@ -140,16 +179,18 @@ def set_seed(seed):
     全局生效
     """
     torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
+    random.seed(seed)
 
 
 if __name__ == "__main__":
     cfg = TD3Config()
     set_seed(cfg.seed)
-    make_dir(cfg.result_path, cfg.model_path, cfg.eval_model_path)
-    client = airsim.MultirotorClient()  # connect to the AirSim simulator
+    make_dir(cfg.result_path, cfg.model_path, cfg.eval_model_path, cfg.ab_model_path)
+    client = airsim.MultirotorClient(port=41452)  # connect to the AirSim simulator
     agent = TD3(cfg)
-    rewards, ma_rewards = train(cfg, client, agent)
-    save_results(rewards, ma_rewards, tag='train', path=cfg.result_path)
+    rewards, ma_rewards, sr, cr, als = train(cfg, client, agent)
+    save_results(rewards, ma_rewards, sr, cr, als, tag='train', path=cfg.result_path)
     plot_rewards(rewards, ma_rewards, cfg, tag="train")

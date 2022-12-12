@@ -8,7 +8,7 @@ from airsim import YawMode
 
 
 class Multirotor:
-    def __init__(self, client: MultirotorClient, is_train: bool):
+    def __init__(self, client: MultirotorClient, is_full: bool):
         self.client = client
 
         client.reset()
@@ -32,14 +32,14 @@ class Multirotor:
         self.bound_x = [-600, 600]
         self.bound_y = [-600, 600]
         self.bound_z = [-250, 0]
-        if is_train:
+        if is_full:
+            self.target_x = [-550, 550]
+            self.target_y = [-550, 550]
+            self.target_z = [-200, -50]
+        else:
             self.target_x = [-400, -150]
             self.target_y = [250, 500]
             self.target_z = [-100, -50]
-        else:
-            self.target_x = [-600, 600]
-            self.target_y = [-600, 600]
-            self.target_z = [-250, 0]
         self.d_safe = 15
 
         # 目标点坐标
@@ -101,15 +101,17 @@ class Multirotor:
     '''
 
     def get_distance_sensors_data(self):
-        yaw_axis = ['Y', 'P']
-        pitch_axis = ['1', '2', '3', '4', '5', '6']
+        yaw_axis = ['1', '2', '3', '4', '5', '6']
+        pitch_axis = ['1', '2', '3']
         data = []
         prefix = "Distance"
         data.append(self.client.getDistanceSensorData(distance_sensor_name=prefix + 'S').distance)
         for i in yaw_axis:
-            for j in pitch_axis:
-                dsn = prefix + i + j
-                data.append(self.client.getDistanceSensorData(distance_sensor_name=dsn).distance)
+            dsn = prefix + 'Y' + i
+            data.append(self.client.getDistanceSensorData(distance_sensor_name=dsn).distance)
+        for i in pitch_axis:
+            dsn = prefix + 'P' + i
+            data.append(self.client.getDistanceSensorData(distance_sensor_name=dsn).distance)
 
         return data
 
@@ -138,7 +140,7 @@ class Multirotor:
     碰撞惩罚要略大于目标点惩罚
     '''
     def step(self, action):
-        done = self.if_done()
+        result, done = self.if_done()
         arrive_reward = self.arrive_reward()
         yaw_reward = self.yaw_reward()
         num_sensor_reward = 0  # self.num_sensor_reward()
@@ -153,6 +155,7 @@ class Multirotor:
         if self.client.simGetCollisionInfo().has_collided:
             # 发生碰撞
             done = True
+            result = 2
             '''
             碰撞惩罚-25
             '''
@@ -164,7 +167,6 @@ class Multirotor:
         my_yaw_mode = YawMode()
         my_yaw_mode.is_rate = False
         my_yaw_mode.yaw_or_rate = 0
-        # TODO 尝试改为速度控制
         self.client.moveByVelocityAsync(vx=self.vx + ax,
                                         vy=self.vy + ay,
                                         vz=self.vz + az,
@@ -185,20 +187,20 @@ class Multirotor:
         self.vz = float(kinematic_state.linear_velocity.z_val)
         next_state = self.get_state()
 
-        return next_state, reward, done
+        return next_state, reward, done, result
 
     def if_done(self):
         # 与目标点距离小于25米
         model_a = self.get_distance()
         if model_a <= 25.0:
-            return True
+            return 1, True
         # 触及边界
         if self.ux < self.bound_x[0] or self.ux > self.bound_x[1] or \
                 self.uy < self.bound_y[0] or self.uy > self.bound_y[1] or \
                 self.uz < self.bound_z[0]:
-            return True
+            return 2, True
 
-        return False
+        return 0, False
 
     '''
     越界惩罚-25
@@ -251,7 +253,7 @@ class Multirotor:
 
     '''
     最短激光雷达长度惩罚(-.7,-.6) or (.3,.4)
-    (-.7,-.3)
+    当前(-.7,-.3)
     '''
 
     def min_sensor_reward(self):

@@ -41,8 +41,10 @@ class TD3(object):
         return action
 
     def update(self):
+        critic_loss = 0
+        actor_loss = 0
         if len(self.memory) < self.batch_size:  # 当 memory 中不满足一个批量时，不更新策略
-            return
+            return critic_loss, actor_loss
 
         self.total_iteration += 1
 
@@ -92,6 +94,8 @@ class TD3(object):
 
             for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+        return critic_loss, actor_loss
 
     def save(self, path):
         torch.save(self.critic.state_dict(), path + "td3_critic")

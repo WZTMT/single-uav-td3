@@ -12,8 +12,8 @@ class Actor(nn.Module):
     def __init__(self, n_states, n_actions, max_action, init_w=3e-3):
         super(Actor, self).__init__()
         self.l1 = nn.Linear(n_states, 256)
-        # self.l2 = nn.Linear(256, 256)
-        # self.l3 = nn.Linear(256, 256)
+        self.l2 = nn.Linear(256, 256)  # 最近一次训练没有第二层和第三层
+        self.l3 = nn.Linear(256, 256)  # 最近一次训练没有第二层和第三层
         self.l4 = nn.Linear(256, 256)
         self.l5 = nn.Linear(256, n_actions)
         self.max_action = max_action
@@ -23,8 +23,8 @@ class Actor(nn.Module):
 
     def forward(self, state):
         x = F.relu(self.l1(state))
-        # x = F.relu(self.l2(x))
-        # x = F.relu(self.l3(x))
+        x = F.relu(self.l2(x))
+        x = F.relu(self.l3(x))
         x = F.relu(self.l4(x))
         action = torch.tanh(self.l5(x))  # torch.tanh与F.tanh没有区别
         return self.max_action * action

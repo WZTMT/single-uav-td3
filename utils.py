@@ -82,12 +82,15 @@ def save_results_1(dic, tag='train', path='./results'):
     print('Results saved！')
 
 
-def save_results(rewards, ma_rewards, tag='train', path='./results'):
+def save_results(rewards, ma_rewards, success, collision, als, tag='train', path='./results'):
     """
     保存奖励
     """
     np.save(path + '{}_rewards.npy'.format(tag), rewards)
     np.save(path + '{}_ma_rewards.npy'.format(tag), ma_rewards)
+    np.save(path + '{}_success.npy'.format(tag), success)
+    np.save(path + '{}_collision.npy'.format(tag), collision)
+    np.save(path + '{}_als.npy'.format(tag), als)
     print('Result saved!')
 
 
